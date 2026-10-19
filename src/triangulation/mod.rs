@@ -27,24 +27,16 @@ pub fn triangulate<S>(
 ) -> Result<Triangulation, String> {
 
     #[cfg(feature = "rayon")] {
-        let (mut ts, mut rs, ns) = (0..b45.hid_per_f.len() - 1)
-            .into_par_iter()
-            .map(|fid| {
-                let hid = b45.hid_per_f[fid] as usize;
-                let ts_ = process_face(&b45, fid, eps);
-                let rs_ = vec![b45.rs[hid].clone(); ts_.len()];
-                let ns_ = vec![b45.ns[fid].clone(); ts_.len()];
-                (ts_, rs_, ns_)
-            })
-            .reduce(
-                || (vec![], vec![], vec![]),
-                |mut acc, (mut ts_, mut rs_, mut ns_)| {
-                    acc.0.append(&mut ts_);
-                    acc.1.append(&mut rs_);
-                    acc.2.append(&mut ns_);
-                    acc
-                },
-            );
+        let nf = b45.hid_per_f.len() - 1;
+        let per_face = (0..nf).into_par_iter().map(|fid| process_face(b45, fid, eps)).collect::<Vec<_>>();
+        let mut ts = per_face.par_iter().flat_map_iter(|t| t.iter().copied()).collect::<Vec<_>>();
+        let mut rs = per_face.par_iter().enumerate()
+            .flat_map_iter(|(fid, t)| std::iter::repeat_n(b45.rs[b45.hid_per_f[fid] as usize], t.len()))
+            .collect::<Vec<_>>();
+        let ns = per_face.par_iter().enumerate()
+            .flat_map_iter(|(fid, t)| std::iter::repeat_n(b45.ns[fid], t.len()))
+            .collect::<Vec<_>>();
+        drop(per_face);
         update_reference(mp, mq, &mut rs);
         Ok(Triangulation { hs: tri_halfs_multi(&mut ts), ns, rs })
     }
@@ -116,13 +108,7 @@ fn single_triangulate(
     hid: usize
 ) -> Vec<Vec3u> {
     let mut idcs = [hid, hid + 1, hid + 2];
-    let mut tails = vec![];
-    let mut heads = vec![];
-    for id in idcs.iter() {
-        tails.push(b45.hs[*id].tail);
-        heads.push(b45.hs[*id].head);
-    }
-    if heads[0] == tails[2] { idcs.swap(1, 2); }
+    if b45.hs[hid].head == b45.hs[hid + 2].tail { idcs.swap(1, 2); }
 
     vec![Vec3u::new(
         b45.hs[idcs[0]].tail,

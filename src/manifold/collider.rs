@@ -1,7 +1,8 @@
 //--- Copyright (C) 2025 Saki Komikado <komietty@gmail.com>,
 //--- This Source Code Form is subject to the terms of the Mozilla Public License v.2.0.
 
-use crate::Vec3;
+use std::sync::atomic::{AtomicU32, Ordering};
+use crate::{par, Vec3};
 use crate::bounds::{union_bbs, BBox, Query};
 
 pub const K_NO_CODE: u32 = 0xFFFFFFFF;
@@ -36,8 +37,6 @@ fn leaf2node(leaf: i32) -> i32 { leaf * 2 }
 fn prefix_length(a: u32, b: u32) -> u32 { (a ^ b).leading_zeros() }
 
 struct RadixTree<'a> {
-    parent:  &'a mut [i32],
-    children: &'a mut [(i32, i32)],
     leaf_morton: &'a [u32],
 }
 
@@ -85,7 +84,8 @@ impl<'a> RadixTree<'a> {
         split
     }
 
-    fn op(&mut self, intl: i32) {
+    // The children of one internal node, found from the leaf codes alone (Karras 2012).
+    fn op(&self, intl: i32) -> (i32, i32) {
         let mut bgn = intl;
         let mut end = self.range_end(bgn);
         if bgn > end { std::mem::swap(&mut bgn, &mut end); }
@@ -95,35 +95,14 @@ impl<'a> RadixTree<'a> {
         s += 1;
         let child2 = if s == end { leaf2node(s) } else { intl2node(s) };
 
-        self.children[intl as usize] = (child1, child2);
-        self.parent[child1 as usize] = intl2node(intl);
-        self.parent[child2 as usize] = intl2node(intl);
+        (child1, child2)
     }
 }
 
-fn build_internal_boxes(
-    node_bb: &mut [BBox],
-    counter: &mut [i32],
-    node_parent: &[i32],
-    intl_children: &[(i32, i32)],
-    leaf: i32,
-) {
-    let mut node = leaf2node(leaf);
-    let mut flag = false;
-    loop {
-        if flag && node == K_ROOT { return; }
-        node = node_parent[node as usize];
-        let intl_idx = node2intl(node).unwrap() as usize;
-        let c = counter[intl_idx];
-        counter[intl_idx] += 1;
-        if c == 0 { return; }
-        node_bb[node as usize] = union_bbs(
-            &node_bb[intl_children[intl_idx].0 as usize],
-            &node_bb[intl_children[intl_idx].1 as usize]
-        );
-        flag = true;
-    }
-}
+// Box slots written from several threads at once; see `update_boxes` for why no two touch one.
+struct Slots(*mut BBox);
+unsafe impl Sync for Slots {}
+unsafe impl Send for Slots {}
 
 #[derive(Clone, Debug)]
 pub struct MortonCollider {
@@ -136,20 +115,29 @@ impl MortonCollider {
     fn num_intl(&self) -> usize { self.intl_children.len() }
     fn num_leaf(&self) -> usize { if self.intl_children.is_empty() { 0 } else { self.num_intl() + 1 } }
 
-    fn update_boxes(&mut self, leaf_bb: &[BBox]) {
-        for (i, box_val) in leaf_bb.iter().enumerate() {
-            self.node_bb[i * 2] = box_val.clone();
-        }
-        let mut counter: Vec<i32> = vec![0; self.num_intl()];
-        for i in 0..self.num_leaf() {
-            build_internal_boxes(
-                &mut self.node_bb,
-                &mut counter,
-                &self.node_parent,
-                &self.intl_children,
-                i as i32,
-            );
-        }
+    // Each leaf walks up; the second arrival at an internal node is the only one to write it,
+    // after both children are written. A box is a min and max, so any order gives the same one.
+    fn update_boxes(&mut self) {
+        if self.num_intl() == 0 { return; }
+        let counter = (0..self.num_intl()).map(|_| AtomicU32::new(0)).collect::<Vec<_>>();
+        let slots = Slots(self.node_bb.as_mut_ptr());
+        let (parent, children) = (&self.node_parent, &self.intl_children);
+        par::for_each(self.num_leaf(), |leaf| {
+            let slots = &slots;
+            let mut node = leaf2node(leaf as i32);
+            while node != K_ROOT {
+                node = parent[node as usize];
+                let intl = node2intl(node).unwrap() as usize;
+                if counter[intl].fetch_add(1, Ordering::AcqRel) == 0 { return; }
+                let (c1, c2) = children[intl];
+                // SAFETY: indices lie inside `node_bb`; the counter hands `node` to this thread
+                // alone, and its acquire orders the children's writes before these reads.
+                unsafe {
+                    let b = union_bbs(&*slots.0.add(c1 as usize), &*slots.0.add(c2 as usize));
+                    *slots.0.add(node as usize) = b;
+                }
+            }
+        });
     }
 
     pub fn new(
@@ -159,36 +147,42 @@ impl MortonCollider {
         let n_intl = leaf_bb.len() - 1;
         let n_node = 2 * leaf_bb.len() - 1;
         let mut node_parent = vec![-1; n_node];
-        let mut intl_children = vec![(0, 0); n_intl];
-        let mut tree = RadixTree {
-            parent: &mut node_parent,
-            children: &mut intl_children,
-            leaf_morton,
-        };
-
-        for i in 0..n_intl { tree.op(i as i32); }
+        let tree = RadixTree { leaf_morton };
+        let intl_children = par::tabulate(n_intl, |i| tree.op(i as i32));
+        for (i, &(c1, c2)) in intl_children.iter().enumerate() {
+            node_parent[c1 as usize] = intl2node(i as i32);
+            node_parent[c2 as usize] = intl2node(i as i32);
+        }
 
         let mut res = MortonCollider {
-            node_bb: vec![BBox::default(); n_node],
+            node_bb: par::tabulate(n_node, |n| if n % 2 == 0 { leaf_bb[n / 2].clone() } else { BBox::default() }),
             node_parent,
             intl_children
         };
 
-        res.update_boxes(leaf_bb);
+        res.update_boxes();
         res
     }
 
-    pub fn collision<F>(&self, queries: &[Query], record:&mut F) where F: FnMut(usize, usize) {
-        for i in 0..queries.len() {
-            find_collisions(
-                queries,
-                &self.node_bb,
-                &self.intl_children,
-                i,
-                record,
-                false,
-            )
-        }
+    /// What `f` makes of every (query id, leaf) pair that overlaps, in the order the queries
+    /// and then the leaves are visited, so the result does not depend on threads.
+    pub fn collision_map<T: Send>(&self, queries: &[Query], f: impl Fn(usize, usize) -> Option<T> + Sync + Send) -> Vec<T> {
+        par::flat_tabulate(queries.len(), |i| {
+            let mut out = vec![];
+            let mut record = |q, l| if let Some(t) = f(q, l) { out.push(t); };
+            find_collisions(queries, &self.node_bb, &self.intl_children, i, &mut record, false);
+            out
+        })
+    }
+
+    /// The sum of `f` over the leaves each query overlaps, one sum per query in query order.
+    pub fn collision_sum(&self, queries: &[Query], f: impl Fn(usize, usize) -> i32 + Sync + Send) -> Vec<i32> {
+        par::tabulate(queries.len(), |i| {
+            let mut sum = 0;
+            let mut record = |q, l| sum += f(q, l);
+            find_collisions(queries, &self.node_bb, &self.intl_children, i, &mut record, false);
+            sum
+        })
     }
 }
 

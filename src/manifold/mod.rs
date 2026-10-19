@@ -6,10 +6,9 @@ pub mod bounds;
 pub mod collider;
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use bounds::BBox;
 use crate::collider::{morton_code, MortonCollider, K_NO_CODE};
-use crate::{Data, Real, Half, Vec3, Vec3u, K_PRECISION, next_of};
+use crate::{par, Data, Real, Half, Vec3, Vec3u, K_PRECISION, next_of};
 use super::hmesh::Hmesh;
 #[cfg(feature = "rayon")] use rayon::prelude::*;
 
@@ -42,31 +41,18 @@ impl<S: Data> Manifold<S> {
         if !idx.len().is_multiple_of(3) { return Err("idx must be a multiple of 3".into()); }
         if !val.is_empty() && val.len() != idx.len() { return Err("val must hold one value per corner".into()); }
 
-        // dedup vertices
-        let mut hash = HashMap::with_capacity(pos.len() / 3);
-        let mut weld = Vec::with_capacity(pos.len() / 3);
-        let mut rmap = vec![0; pos.len()];
-        let mut hs   = Vec::with_capacity(idx.len());
-
-        for (i, p) in pos.chunks(3).enumerate() {
-            let v = Vec3::new(p[0] as Real, p[1] as Real, p[2] as Real);
-            let k = (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
-            if let Some(&w) = hash.get(&k) { rmap[i] = w; } else {
-                let n = weld.len();
-                weld.push(v);
-                hash.insert(k, n);
-                rmap[i] = n;
-            }
-        }
+        let (weld, rmap) = weld_verts(pos);
 
         // create halfedge container
-        for (t, i) in idx.chunks(3).enumerate() {
-            let v = [rmap[i[0]], rmap[i[1]], rmap[i[2]]];
-            if v[0] == v[1] || v[1] == v[2] || v[2] == v[0] { continue; }
-            hs.push(Half::new(v[0], v[1], usize::MAX, 3 * t));
-            hs.push(Half::new(v[1], v[2], usize::MAX, 3 * t + 1));
-            hs.push(Half::new(v[2], v[0], usize::MAX, 3 * t + 2));
-        }
+        let hs = par::flat_tabulate(idx.len() / 3, |t| {
+            let v = [rmap[idx[3 * t]], rmap[idx[3 * t + 1]], rmap[idx[3 * t + 2]]];
+            let keep = v[0] != v[1] && v[1] != v[2] && v[2] != v[0];
+            keep.then(|| [
+                Half::new(v[0], v[1], usize::MAX, 3 * t),
+                Half::new(v[1], v[2], usize::MAX, 3 * t + 1),
+                Half::new(v[2], v[0], usize::MAX, 3 * t + 2),
+            ]).into_iter().flatten()
+        });
 
         let mut mfd = Self::new_impl(weld, hs, val.to_vec(), None, None)?;
         if !mfd.vals.is_empty() { dedupe_values(&mut mfd.hs, &mfd.vals); }
@@ -81,14 +67,12 @@ impl<S: Data> Manifold<S> {
         tol: Option<Real>,
     ) -> Result<Self, String> {
         let bb = BBox::new(None, &ps);
-        let idx = hs.chunks(3).map(|t| Vec3u::new(t[0].tail, t[1].tail, t[2].tail)).collect::<Vec<_>>();
+        let idx = par::tabulate(hs.len() / 3, |f| Vec3u::new(hs[3 * f].tail, hs[3 * f + 1].tail, hs[3 * f + 2].tail));
         let (mut f_bb, mut f_mt) = compute_face_morton(&ps, &idx, &bb);
         let (hm, map) = sort_faces(&ps, &idx, &mut f_bb, &mut f_mt)?;
         let prop = |i: usize| hs[3 * map[i / 3] + i % 3].prop;
-        let mut hs = hm.half.iter().map(|&i| Half::new(hm.tail[i], hm.head[i], hm.twin[i], prop(i))).collect::<Vec<_>>();
-
-        if vs.is_empty() { for h in hs.iter_mut() { h.prop = h.tail; } }
-        let vals = if vs.is_empty() { vec![] } else { hs.iter().map(|h| vs[h.prop].clone()).collect() };
+        let hs = par::map(&hm.half, |&i| Half::new(hm.tail[i], hm.head[i], hm.twin[i], if vs.is_empty() { hm.tail[i] } else { prop(i) }));
+        let vals = if vs.is_empty() { vec![] } else { par::map(&hs, |h| vs[h.prop].clone()) };
 
         let mut e = K_PRECISION * bb.scale();
         e = if e.is_finite() { e } else { -1. };
@@ -103,7 +87,7 @@ impl<S: Data> Manifold<S> {
     }
 
     pub fn is_manifold(&self) -> bool {
-        self.hs.iter().enumerate().all(|(i, h)| {
+        par::all(&self.hs, |i, h| {
             if h.tail().is_none() || h.head().is_none() { return true; }
             match h.pair() {
                 None => { false },
@@ -118,6 +102,29 @@ impl<S: Data> Manifold<S> {
             }
         })
     }
+}
+
+// Merges bit-identical positions, numbering the kept ones in order of first appearance.
+fn weld_verts(pos: &[f64]) -> (Vec<Vec3>, Vec<usize>) {
+    let n = pos.len() / 3;
+    let ps = par::tabulate(n, |i| Vec3::new(pos[3 * i] as Real, pos[3 * i + 1] as Real, pos[3 * i + 2] as Real));
+    let mut keyed = par::tabulate(n, |i| ((ps[i].x.to_bits(), ps[i].y.to_bits(), ps[i].z.to_bits()), i));
+    par::sort_unique(&mut keyed);
+
+    // The lowest index of each position, which sorts first among its equals.
+    let mut first = vec![0; n];
+    for run in keyed.chunk_by(|a, b| a.0 == b.0) {
+        for &(_, i) in run { first[i] = run[0].1; }
+    }
+    drop(keyed);
+
+    let mut weld = Vec::with_capacity(n);
+    let mut rmap = vec![0; pos.len()];
+    for i in 0..n {
+        if first[i] == i { rmap[i] = weld.len(); weld.push(ps[i]); }
+        else { rmap[i] = rmap[first[i]]; }
+    }
+    (weld, rmap)
 }
 
 fn compute_face_morton(
@@ -167,10 +174,10 @@ fn sort_faces(
     face_morton: &mut Vec<u32>
 ) -> Result<(Hmesh, Vec<usize>), String> {
     let mut map = (0..face_morton.len()).collect::<Vec<_>>();
-    map.sort_by_key(|&i| face_morton[i]);
-    *face_bboxes = map.iter().map(|&i| face_bboxes[i].clone()).collect::<Vec<_>>();
-    *face_morton = map.iter().map(|&i| face_morton[i]).collect::<Vec<_>>();
-    Ok((Hmesh::new(pos, &map.iter().map(|&i| idx[i]).collect::<Vec<_>>())?, map))
+    par::sort_by_key(&mut map, |&i| face_morton[i]);
+    *face_bboxes = par::map(&map, |&i| face_bboxes[i].clone());
+    *face_morton = par::map(&map, |&i| face_morton[i]);
+    Ok((Hmesh::new(pos, &par::map(&map, |&i| idx[i]))?, map))
 }
 
 fn compute_coplanar_idx(
@@ -180,10 +187,8 @@ fn compute_coplanar_idx(
     tol: Real
 ) -> Vec<i32> {
     let nt = hs.len() / 3;
-    let mut priority = vec![];
     let mut res = vec![-1; nt];
-
-    for t in 0..nt {
+    let mut priority = par::tabulate(nt, |t| {
         let i = t * 3;
         let area = if hs[i].tail().is_none() { 0.} else {
             let p0 = ps[hs[i].tail];
@@ -191,10 +196,10 @@ fn compute_coplanar_idx(
             let p2 = ps[hs[i + 1].head];
             (p1 - p0).cross(p2 - p0).length_squared()
         };
-        priority.push((area, t));
-    }
+        (area, t)
+    });
 
-    priority.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+    par::sort_by(&mut priority, |a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
 
     let mut interior = vec![];
     for (_, t) in priority.iter() {
@@ -230,19 +235,19 @@ pub(crate) fn cleanup_unused_verts(
     hs: &mut Vec<Half>
 ) {
     let bb = BBox::new(None, ps);
-    let mt = ps.iter().map(|p| morton_code(p, &bb)).collect::<Vec<_>>();
+    let mt = par::map(ps, |p| morton_code(p, &bb));
 
     let mut new2old = (0..ps.len()).collect::<Vec<_>>();
     let mut old2new = vec![0; ps.len()];
-    new2old.sort_by_key(|&i| mt[i]);
+    par::sort_by_key(&mut new2old, |&i| mt[i]);
     for (new, &old) in new2old.iter().enumerate() { old2new[old] = new; }
 
     // reindex verts
-    for h in hs.iter_mut() {
-        if h.pair().is_none() { continue; }
+    par::for_each_mut(hs, |_, h| {
+        if h.pair().is_none() { return; }
         h.tail = old2new[h.tail];
         h.head = old2new[h.head];
-    }
+    });
 
     // truncate pos container
     let nv = new2old
@@ -252,7 +257,7 @@ pub(crate) fn cleanup_unused_verts(
 
     new2old.truncate(nv);
 
-    *ps = new2old.iter().map(|&i| ps[i]).collect();
+    *ps = par::map(&new2old, |&i| ps[i]);
     *hs = hs.iter().filter(|h| h.pair().is_some()).cloned().collect();
 }
 

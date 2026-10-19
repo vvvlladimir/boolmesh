@@ -14,7 +14,6 @@ pub fn winding03<S>(
     let ma = if fwd { mp } else { mq };
     let mb = if fwd { mq } else { mp };
 
-    let mut w03 = vec![0; ma.nv];
     let k02 = Kernel02 {
         ps_p: &ma.ps,
         ps_q: &mb.ps,
@@ -24,12 +23,8 @@ pub fn winding03<S>(
         fwd,
     };
 
-    mb.collider.collision(
-        &ma.ps.iter().enumerate()
-            .map(|(i, p)| Query::Pt(BPos{id: Some(i), pos: Vec2::new(p.x, p.y)}))
-            .collect::<Vec<_>>(),
-        &mut |a, b| if let Some((s, _)) = k02.op(a, b) { w03[a] += s * if fwd { 1 } else { -1 }; }
-    );
-
-    w03
+    let queries = ma.ps.iter().enumerate()
+        .map(|(i, p)| Query::Pt(BPos{id: Some(i), pos: Vec2::new(p.x, p.y)}))
+        .collect::<Vec<_>>();
+    mb.collider.collision_sum(&queries, |a, b| k02.op(a, b).map_or(0, |(s, _)| s * if fwd { 1 } else { -1 }))
 }

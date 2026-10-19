@@ -9,6 +9,7 @@ mod manifold;
 mod triangulation;
 mod simplification;
 mod common;
+mod par;
 mod values;
 mod boolean03;
 mod boolean45;

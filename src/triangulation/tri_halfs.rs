@@ -74,7 +74,6 @@ pub fn tri_halfs_single(ts: &[Vec3u]) -> Vec<Half> {
 pub fn tri_halfs_multi(ts: &[Vec3u]) -> Vec<Half> {
     let nh = ts.len() * 3;
     let ne = nh / 2;
-    let nt = nh / 3;
     let mut hs  = vec![Half::default(); nh];
     let mut is = (0..nh).collect::<Vec<_>>();
     let mut ky = vec![0u64; nh];
@@ -96,7 +95,11 @@ pub fn tri_halfs_multi(ts: &[Vec3u]) -> Vec<Half> {
             }
         });
 
-    is.par_sort_by_key(|&i| ky[i]);
+    // Sorting (key, index) pairs, unique by index, orders them as a stable sort by key would.
+    let mut kis = ky.par_iter().zip(is.par_iter()).map(|(&k, &i)| (k, i)).collect::<Vec<_>>();
+    kis.par_sort_unstable();
+    is.par_iter_mut().zip(kis.par_iter()).for_each(|(i, ki)| *i = ki.1);
+    drop(kis);
 
     let mut ini = 0;
     for i in 0..ne { ini = step(&mut is, &mut hs, i, ini); }
@@ -122,17 +125,15 @@ pub fn tri_halfs_multi(ts: &[Vec3u]) -> Vec<Half> {
         for j in 0..3 { t[j] = f[(mini + j) % 3].clone(); }
     });
 
-    // reorder halfedges: step 2
-    for t in 0..nt {
-        for i in t * 3..(t + 1) * 3 {
-            let tail = hs[i].tail;
-            let pair = hs[i].pair;
-            if pair == REMOVE_FLAG || pair >= hs.len() { continue; }
-            let j = (pair / 3) * 3;
-            let f = (0..3).find(|&k| hs[j + k].head == tail);
-            if let Some(k) = f { hs[i].pair = j + k; }
-        }
-    }
+    // reorder halfedges: step 2, reading only heads, which it does not write
+    let pairs = (0..nh).into_par_iter().map(|i| {
+        let tail = hs[i].tail;
+        let pair = hs[i].pair;
+        if pair == REMOVE_FLAG || pair >= hs.len() { return pair; }
+        let j = (pair / 3) * 3;
+        (0..3).find(|&k| hs[j + k].head == tail).map_or(pair, |k| j + k)
+    }).collect::<Vec<_>>();
+    hs.par_iter_mut().zip(pairs).for_each(|(h, p)| h.pair = p);
     hs
 }
 

@@ -3,7 +3,7 @@
 
 use std::mem;
 use std::collections::BTreeMap;
-use crate::{Manifold, Real, Vec3, Half, Tref, face_of};
+use crate::{par, Manifold, Real, Vec3, Half, Tref, face_of};
 use crate::boolean03::Boolean03;
 use crate::bounds::BBox;
 use crate::OpType;
@@ -40,7 +40,7 @@ fn exclusive_scan(input: &[i32], output: &mut [i32], offset: i32) {
     }
 }
 
-fn size_output<S>(
+fn size_output<S: Sync>(
     mp: &Manifold<S>,
     mq: &Manifold<S>,
     i03: &[i32],
@@ -52,12 +52,10 @@ fn size_output<S>(
     fns: &mut Vec<Vec3>,
     inv: bool, // whether to invert mesh of q
 ) -> (Vec<i32>, Vec<i32>) {
-    let mut side_p = vec![0; mp.nf];
-    let mut side_q = vec![0; mq.nf];
-
     // equivalent to CountVerts
-    for (i, h) in mp.hs.iter().enumerate() { side_p[face_of(i)] += i03[h.tail].abs(); }
-    for (i, h) in mq.hs.iter().enumerate() { side_q[face_of(i)] += i30[h.tail].abs(); }
+    let count = |hs: &[Half], i03: &[i32], f: usize| (0..3).map(|k| i03[hs[3 * f + k].tail].abs()).sum::<i32>();
+    let mut side_p = par::tabulate(mp.nf, |f| count(&mp.hs, i03, f));
+    let mut side_q = par::tabulate(mq.nf, |f| count(&mq.hs, i30, f));
 
     // equivalent to CountNewVerts
     for i in 0..i12.len() {
@@ -84,13 +82,11 @@ fn size_output<S>(
     let keep_fs = side_pq.iter().map(|&x| if x > 0 { 1 } else { 0 }).collect::<Vec<_>>();
 
     inclusive_scan(&keep_fs, &mut face_pq2r[1..], 0);
-    let nf_r = *face_pq2r.last().unwrap() as usize;
     face_pq2r.truncate(mp.nf + mq.nf);
-    fns.resize(nf_r, Vec3::ZERO);
 
-    let mut fid_r = 0;
-    for (i, n) in mp.fns.iter().enumerate() { if side_p[i] > 0 { fns[fid_r] = *n; fid_r += 1; } }
-    for (i, n) in mq.fns.iter().enumerate() { if side_q[i] > 0 { fns[fid_r] = *n * if inv {-1.} else {1.}; fid_r += 1; } }
+    *fns = par::flat_tabulate(mp.nf + mq.nf, |i| (side_pq[i] > 0).then(|| {
+        if i < mp.nf { mp.fns[i] } else { mq.fns[i - mp.nf] * if inv {-1.} else {1.} }
+    }));
 
     let truncated = side_pq.iter().filter(|s| **s > 0).copied().collect::<Vec<_>>();
     let mut ih_per_f = vec![0; truncated.len()];
@@ -325,7 +321,7 @@ pub struct Boolean45 {
     pub nv_from_q: usize,
 }
 
-pub fn boolean45<S>(
+pub fn boolean45<S: Sync>(
     mp: &Manifold<S>,
     mq: &Manifold<S>,
     b03: &Boolean03,
@@ -376,8 +372,9 @@ pub fn boolean45<S>(
     let mut face_ptr_r = hid_per_f.clone();
     let mut whole_flag_p = vec![true; mp.nh];
     let mut whole_flag_q = vec![true; mq.nh];
-    let mut rs_r = vec![Tref::default(); nh];
-    let mut hs_r = vec![Half::default(); nh];
+    // Filled on every thread: at millions of halfedges this is mostly first-touch page faults.
+    let mut rs_r = par::tabulate(nh, |_| Tref::default());
+    let mut hs_r = par::tabulate(nh, |_| Half::default());
     let fid_p2r = &fid_pq2r[0..mp.nf];
     let fid_q2r = &fid_pq2r[mp.nf..];
 
