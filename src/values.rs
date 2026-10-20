@@ -46,7 +46,7 @@ pub fn annotate<S: Data>(
 ) -> Vec<S> {
     if mp.vals.is_empty() && mq.vals.is_empty() { return vec![]; }
 
-    let none = usize::MAX;
+    let none = crate::NONE;
     let mut vs = vec![];
     let mut shared = HashMap::new();
 
@@ -55,14 +55,14 @@ pub fn annotate<S: Data>(
         let r = rs[tri];
         let pq = r.mid == 0;
         let m = if pq { mp } else { mq };
-        let old = |j: usize| m.hs[3 * r.fid + j].prop;
-        let val = |j: usize| m.vals[3 * r.fid + j].clone();
-        let pos = [0, 1, 2].map(|j| m.ps[m.hs[3 * r.fid + j].tail]);
+        let old = |j: usize| m.hs[(3 * r.fid + (j as u32)) as usize].prop;
+        let val = |j: usize| m.vals[(3 * r.fid + (j as u32)) as usize].clone();
+        let pos = [0, 1, 2].map(|j| m.ps[m.hs[(3 * r.fid + j) as usize].tail as usize]);
 
         for i in 0..3 {
             let h = 3 * tri + i;
             let v = hs[h].tail;
-            let r = get_barycentric_ratio(&ps[v], &pos, eps);
+            let r = get_barycentric_ratio(&ps[v as usize], &pos, eps);
             let w = |j: usize| val(j) * r[j];
             let k = if m.vals.is_empty() { (pq, none, none, none) }
                     else if let Some(j) = (0..3).find(|&j| r[j] == 1.) { (pq, none, old(j), none) }
@@ -71,7 +71,7 @@ pub fn annotate<S: Data>(
 
             hs[h].prop = *shared.entry(k).or_insert_with(|| {
                 vs.push(if m.vals.is_empty() { S::default() } else { w(0) + w(1) + w(2) });
-                vs.len() - 1
+                (vs.len() - 1) as u32
             });
         }
     }

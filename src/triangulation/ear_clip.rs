@@ -360,7 +360,7 @@ impl EarClip {
         let i  = ear.borrow().idx;
         let il = ear.borrow().idx_l();
         let ir = ear.borrow().idx_r();
-        if il != i && ir != i && il != ir { self.tris.push(Vec3u::new(il, i, ir)); }
+        if il != i && ir != i && il != ir { self.tris.push(Vec3u::new(il as u32, i as u32, ir as u32)); }
     }
 
     fn clip_degenerate(&mut self, ear: &EvPtr) {

@@ -19,20 +19,20 @@ fn record(
 
     let n0 = hs[next_of(h0)].head;
     let n1 = hs[next_of(h1)].head;
-    if h.tail < oft && h.head < oft && n0 < oft && n1 < oft { return false; }
+    if h.tail < (oft as u32) && h.head < (oft as u32) && n0 < (oft as u32) && n1 < (oft as u32) { return false; }
 
     let (e0, e1, e2) = hids_of(h0);
     let p = get_aa_proj_matrix(&ns[h0 / 3]);
-    let a = compute_aa_proj(&p, &ps[hs[e0].tail]);
-    let b = compute_aa_proj(&p, &ps[hs[e1].tail]);
-    let c = compute_aa_proj(&p, &ps[hs[e2].tail]);
+    let a = compute_aa_proj(&p, &ps[hs[e0].tail as usize]);
+    let b = compute_aa_proj(&p, &ps[hs[e1].tail as usize]);
+    let c = compute_aa_proj(&p, &ps[hs[e2].tail as usize]);
     if is_ccw_2d(&a, &b, &c, tol) > 0 || !is01_longest_2d(&a, &b, &c) { return false; }
 
     let (e0, e1, e2) = hids_of(h1);
     let p = get_aa_proj_matrix(&ns[h1 / 3]);
-    let a = compute_aa_proj(&p, &ps[hs[e0].tail]);
-    let b = compute_aa_proj(&p, &ps[hs[e1].tail]);
-    let c = compute_aa_proj(&p, &ps[hs[e2].tail]);
+    let a = compute_aa_proj(&p, &ps[hs[e0].tail as usize]);
+    let b = compute_aa_proj(&p, &ps[hs[e1].tail as usize]);
+    let c = compute_aa_proj(&p, &ps[hs[e2].tail as usize]);
     is_ccw_2d(&a, &b, &c, tol) > 0 || is01_longest_2d(&a, &b, &c)
 }
 
@@ -81,10 +81,10 @@ fn recursive_edge_swap<S: Data>(
         // The 0-verts are swapped to the opposite 2-verts.
         let v0 = tail_of(hs, t0e.2);
         let v1 = tail_of(hs, t1e.2);
-        hs[t0e.0].tail = v1;
-        hs[t0e.2].head = v1;
-        hs[t1e.0].tail = v0;
-        hs[t1e.2].head = v0;
+        hs[t0e.0].tail = v1 as u32;
+        hs[t0e.2].head = v1 as u32;
+        hs[t1e.0].tail = v0 as u32;
+        hs[t1e.2].head = v0 as u32;
 
         let pair0 = pair_of(hs, t1e.2);
         let pair1 = pair_of(hs, t0e.2);
@@ -101,11 +101,11 @@ fn recursive_edge_swap<S: Data>(
         if !vs.is_empty() {
             let a = (l02 / l01).min(1.).max(0.);
             let p = vs.len();
-            vs.push(vs[hs[t1e.0].prop].clone() * a + vs[hs[t1e.1].prop].clone() * (1. - a));
+            vs.push(vs[hs[t1e.0].prop as usize].clone() * a + vs[hs[t1e.1].prop as usize].clone() * (1. - a));
             hs[t0e.0].prop = hs[t1e.2].prop;
             hs[t0e.1].prop = hs[t1e.0].prop;
-            hs[t0e.2].prop = p;
-            hs[t1e.0].prop = p;
+            hs[t0e.2].prop = p as u32;
+            hs[t1e.0].prop = p as u32;
         }
 
         // If the new edge already exists, duplicate the verts and split the mesh.

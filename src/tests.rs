@@ -495,9 +495,9 @@ mod test_sphere_degenerate {
 
     fn volume(m: &Manifold) -> f64 {
         m.hs.chunks(3).map(|t| {
-            let a: Vec3 = m.ps[t[0].tail];
-            let b: Vec3 = m.ps[t[1].tail];
-            let c: Vec3 = m.ps[t[2].tail];
+            let a: Vec3 = m.ps[(t[0].tail as usize)];
+            let b: Vec3 = m.ps[(t[1].tail as usize)];
+            let c: Vec3 = m.ps[(t[2].tail as usize)];
             a.dot(b.cross(c)) as f64
         }).sum::<f64>() / 6.
     }
@@ -626,7 +626,7 @@ mod test_values {
 
     fn volume<S>(m: &Manifold<S>) -> f64 {
         m.hs.chunks(3).map(|t| {
-            let (a, b, c) = (m.ps[t[0].tail], m.ps[t[1].tail], m.ps[t[2].tail]);
+            let (a, b, c) = (m.ps[(t[0].tail as usize)], m.ps[(t[1].tail as usize)], m.ps[(t[2].tail as usize)]);
             a.dot(b.cross(c)) as f64
         }).sum::<f64>() / 6.
     }
@@ -637,7 +637,7 @@ mod test_values {
     fn check_corner_uvs(m: &Manifold<Vec2>, cubes: &[Cube], tol: f64) {
         assert_eq!(m.vals.len(), m.hs.len());
         let corner = |i: usize| {
-            let (p, uv) = (m.ps[m.hs[i].tail], m.vals[i]);
+            let (p, uv) = (m.ps[(m.hs[i].tail as usize)], m.vals[i]);
             ([p.x as f64, p.y as f64, p.z as f64], [uv.x as f64, uv.y as f64])
         };
         for t in 0..m.nf {
@@ -675,7 +675,7 @@ mod test_values {
         assert_eq!(m.vals.len(), 36);
         assert!((volume(&m) - 1.).abs() < tol());
         let mut per_vert = vec![std::collections::BTreeSet::new(); m.nv];
-        for h in &m.hs { per_vert[h.tail].insert(h.prop); }
+        for h in &m.hs { per_vert[(h.tail as usize)].insert(h.prop); }
         assert!(per_vert.iter().all(|s| s.len() == 3));
         check_corner_uvs(&m, &[cube([0., 0., 0.], 1., 0.)], tol());
     }
@@ -704,7 +704,7 @@ mod test_values {
         for op in [OpType::Add, OpType::Subtract, OpType::Intersect] {
             let r = compute_boolean(&p, &q, op).unwrap();
             for (h, &v) in r.hs.iter().zip(&r.vals) {
-                let x = r.ps[h.tail];
+                let x = r.ps[(h.tail as usize)];
                 let e = f(&[x.x as f64, x.y as f64, x.z as f64]);
                 assert!(((v - e) as f64).abs() < tol(), "{v} != {e}");
             }
@@ -781,7 +781,7 @@ mod test_determinism {
 
     fn fingerprint(m: &Manifold) -> (Vec<[u64; 3]>, Vec<[usize; 3]>) {
         let ps = m.ps.iter().map(|p| [p.x as f64, p.y as f64, p.z as f64].map(f64::to_bits)).collect();
-        let hs = m.hs.iter().map(|h| [h.tail, h.head, h.pair]).collect();
+        let hs = m.hs.iter().map(|h| [h.tail as usize, h.head as usize, h.pair as usize]).collect();
         (ps, hs)
     }
 
@@ -800,5 +800,46 @@ mod test_determinism {
                 assert_eq!(fingerprint(&compute_boolean(&block, &other, op()).unwrap()), first);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test_compose {
+    use crate::{Manifold, OpType, compute_boolean};
+
+    fn cube(lo: [f64; 3], hi: [f64; 3]) -> Manifold {
+        let mut ps = vec![];
+        for i in 0..8 {
+            ps.push(if i & 1 == 0 { lo[0] } else { hi[0] });
+            ps.push(if i & 2 == 0 { lo[1] } else { hi[1] });
+            ps.push(if i & 4 == 0 { lo[2] } else { hi[2] });
+        }
+        let fs = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5];
+        Manifold::new(&ps, &fs).unwrap()
+    }
+
+    fn volume(m: &Manifold) -> f64 {
+        m.hs.chunks(3).map(|t| {
+            let (a, b, c) = (m.ps[t[0].tail as usize], m.ps[t[1].tail as usize], m.ps[t[2].tail as usize]);
+            a.dot(b.cross(c)) as f64
+        }).sum::<f64>() / 6.
+    }
+
+    #[test]
+    fn composed_parts_are_one_closed_manifold_with_both_volumes() {
+        let (a, b) = (cube([0.; 3], [1.; 3]), cube([3.; 3], [5.; 3]));
+        let both = Manifold::compose(&[&a, &b]).unwrap();
+        assert!(both.is_manifold());
+        assert_eq!(both.nf, a.nf + b.nf);
+        assert!((volume(&both) - 9.).abs() < 1e-9, "a unit cube and a 2 mm cube");
+    }
+
+    #[test]
+    fn a_composed_manifold_cuts_like_its_parts() {
+        let (a, b) = (cube([0.; 3], [1.; 3]), cube([3.; 3], [5.; 3]));
+        let both = Manifold::compose(&[&a, &b]).unwrap();
+        let slab = cube([-1., -1., 0.5], [6., 6., 4.]);
+        let cut = compute_boolean(&both, &slab, OpType::Subtract).unwrap();
+        assert!((volume(&cut) - (0.5 + 4.)).abs() < 1e-9, "the lower half of the unit cube and the top 2 x 2 x 1 of the other");
     }
 }

@@ -4,7 +4,7 @@
 pub mod dedup;
 pub mod re_swap;
 pub mod collapse;
-use crate::{Data, Real, Half, Tref, next_of, Vec2, Vec3};
+use crate::{par, Data, Real, Half, Tref, next_of, Vec2, Vec3};
 use collapse::{collapse_edge, collapse_short_edges, collapse_collinear_edges};
 use dedup::dedupe_edges;
 use re_swap::swap_degenerates;
@@ -20,17 +20,23 @@ pub fn simplify_topology<S: Data>(
     eps: Real,
 ) {
     let nv = nv_from_p + nv_from_q;
+    let mut laps = crate::laps::Laps::new("simplify");
     split_pinched_vert(hs, ps);
+    laps.lap("pinched");
     dedupe_edges(ps, hs, ns, rs);
+    laps.lap("dedupe");
     collapse_short_edges(hs, ps, ns,     rs, nv, !vs.is_empty(), eps);
+    laps.lap("short");
     collapse_collinear_edges(hs, ps, ns, rs, nv, !vs.is_empty(), eps);
+    laps.lap("collinear");
     swap_degenerates(hs, ps, ns, rs, vs, nv, eps);
+    laps.lap("swap");
 }
 
-fn head_of(hs: &[Half], i: usize) -> usize { hs[i].head }
-fn tail_of(hs: &[Half], i: usize) -> usize { hs[i].tail }
-fn pair_of(hs: &[Half], i: usize) -> usize { hs[i].pair }
-fn pair_up(hs: &mut[Half], i: usize, j: usize) { hs[i].pair = j; hs[j].pair = i; }
+fn head_of(hs: &[Half], i: usize) -> usize { hs[i].head as usize }
+fn tail_of(hs: &[Half], i: usize) -> usize { hs[i].tail as usize }
+fn pair_of(hs: &[Half], i: usize) -> usize { hs[i].pair as usize }
+fn pair_up(hs: &mut[Half], i: usize, j: usize) { hs[i].pair = j as u32; hs[j].pair = i as u32; }
 fn hids_of(i: usize) -> (usize, usize, usize) { let j = next_of(i); let k = next_of(j); (i, j, k) }
 
 // When bgn halfedge and end halfedge are heading to the same vertex,
@@ -54,10 +60,10 @@ fn form_loops(
     update_vid_around_star(hs, bgn_pair, end_pair, bgn_vid);
     update_vid_around_star(hs, end, bgn, end_vid);
 
-    hs[bgn].pair = end_pair;
-    hs[end_pair].pair = bgn;
-    hs[end].pair = bgn_pair;
-    hs[bgn_pair].pair = end;
+    hs[bgn].pair = end_pair as u32;
+    hs[end_pair].pair = bgn as u32;
+    hs[end].pair = bgn_pair as u32;
+    hs[bgn_pair].pair = end as u32;
 
     remove_if_folded(hs, ps, end);
 }
@@ -84,8 +90,8 @@ fn remove_if_folded(
         (false, true) => { ps[tail_of(hs, j1)] = Vec3::NAN; }
         _ => {} // topo valid
     }
-    pair_up(hs, hs[i1].pair, hs[j2].pair);
-    pair_up(hs, hs[i2].pair, hs[j1].pair);
+    pair_up(hs, hs[i1].pair as usize, hs[j2].pair as usize);
+    pair_up(hs, hs[i2].pair as usize, hs[j1].pair as usize);
     for i in [i0, i1, i2] { hs[i] = Half::default(); }
     for j in [j0, j1, j2] { hs[j] = Half::default(); }
 }
@@ -94,28 +100,55 @@ fn split_pinched_vert(
     hs: &mut [Half],
     ps: &mut Vec<Vec3>
 ) {
+    // Only a vertex whose halfedges form more than one star is split; walking the others would
+    // write back what they hold, so the walk below visits the halfedges of split vertices alone.
+    let pinched = pinched_verts(hs, ps.len());
     let mut v_processed = vec![false; ps.len()];
     let mut h_processed = vec![false; hs.len()];
 
-    for hid in 0..hs.len() {
+    for hid in pinched {
         if h_processed[hid] { continue; }
         let mut vid = hs[hid].tail;
-        if vid == usize::MAX { continue; }
-        if v_processed[vid] {
-            ps.push(ps[vid]);
-            vid = ps.len() - 1;
-        } else { v_processed[vid] = true; }
+        if v_processed[vid as usize] {
+            ps.push(ps[vid as usize]);
+            vid = (ps.len() - 1) as u32;
+        } else { v_processed[vid as usize] = true; }
 
         // loop halfedges around their tail ccw way
         let mut cur = hid;
         loop {
-            cur = next_of(hs[cur].pair);
+            cur = next_of(hs[cur].pair as usize);
             h_processed[cur] = true;
             hs[cur].tail = vid;
-            hs[hs[cur].pair].head = vid;
+            hs[hs[cur].pair as usize].head = vid;
             if cur == hid { break; }
         }
     }
+}
+
+/// The halfedges, in order, whose tail has more halfedges than the star around one of them holds.
+fn pinched_verts(hs: &[Half], nv: usize) -> Vec<usize> {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    let count = (0..nv).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>();
+    let first = (0..nv).map(|_| AtomicUsize::new(usize::MAX)).collect::<Vec<_>>();
+    par::for_each(hs.len(), |h| {
+        let v = hs[h].tail;
+        if v == ((usize::MAX) as u32) { return; }
+        count[v as usize].fetch_add(1, Relaxed);
+        first[v as usize].fetch_min(h, Relaxed);
+    });
+    let split = par::tabulate(nv, |v| {
+        let start = first[v].load(Relaxed);
+        if start == usize::MAX { return false; }
+        let (mut cur, mut n) = (start, 0);
+        loop {
+            cur = next_of(hs[cur].pair as usize);
+            n += 1;
+            if cur == start || n > hs.len() { break; }
+        }
+        n != count[v].load(Relaxed)
+    });
+    par::flat_tabulate(hs.len(), |h| (hs[h].tail != ((usize::MAX) as u32) && split[hs[h].tail as usize]).then_some(h))
 }
 
 fn update_vid_around_star(
@@ -126,8 +159,8 @@ fn update_vid_around_star(
 ) {
     let mut cur = bgn;
     while cur != end {
-        hs[cur].head = vid; cur = next_of(cur);
-        hs[cur].tail = vid; cur = pair_of(hs, cur);
+        hs[cur].head = vid as u32; cur = next_of(cur);
+        hs[cur].tail = vid as u32; cur = pair_of(hs, cur);
         assert_ne!(cur, bgn);
     }
 }
@@ -136,8 +169,8 @@ fn collapse_triangle(hs: &mut [Half], hids: &(usize, usize, usize)) {
     if hs[hids.1].pair().is_none() { return; }
     let pair1 = pair_of(hs, hids.1);
     let pair2 = pair_of(hs, hids.2);
-    hs[pair1].pair = pair2;
-    hs[pair2].pair = pair1;
+    hs[pair1].pair = pair2 as u32;
+    hs[pair2].pair = pair1 as u32;
     for i in [hids.0, hids.1, hids.2] { hs[i] = Half { prop: hs[i].prop, ..Half::default() }; }
 }
 

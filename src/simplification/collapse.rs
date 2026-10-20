@@ -13,9 +13,9 @@ fn record_if_collinear(
     nv: usize,
 ) -> bool {
     let h = &hs[hid];
-    if h.pair().is_none() || (h.tail < nv) { return false; }
+    if h.pair().is_none() || (h.tail < (nv as u32)) { return false; }
 
-    let cw_next = |i: usize| next_of(hs[i].pair);
+    let cw_next = |i: usize| next_of(hs[i].pair as usize);
 
     let     bgn = hid;
     let mut cur = cw_next(bgn);
@@ -40,8 +40,8 @@ fn record_if_short(
     ep: Real,
 ) -> bool {
     let h = &hs[hid];
-    if h.pair().is_none() || (h.tail < nv && h.head < nv) { return false; }
-    (ps[hs[hid].head] - ps[hs[hid].tail]).length_squared() < ep.powi(2)
+    if h.pair().is_none() || (h.tail < (nv as u32) && h.head < (nv as u32)) { return false; }
+    (ps[hs[hid].head as usize] - ps[hs[hid].tail as usize]).length_squared() < ep.powi(2)
 
 }
 
@@ -61,11 +61,11 @@ pub fn collapse_edge(
 
     let vid_keep = to_rmv.head;
     let vid_delt = to_rmv.tail;
-    let pos_keep = ps[vid_keep];
-    let pos_delt = ps[vid_delt];
+    let pos_keep = ps[vid_keep as usize];
+    let pos_delt = ps[vid_delt as usize];
 
     let t0 = hids_of(hid);
-    let t1 = hids_of(to_rmv.pair);
+    let t1 = hids_of(to_rmv.pair as usize);
 
     let mut bgn = pair_of(hs, t1.1); // the bgn half heading delt vert
     let     end = t0.2;              // the end half heading delt vert
@@ -73,14 +73,14 @@ pub fn collapse_edge(
     // check validity by orbiting start vert ccw order
     if (pos_keep - pos_delt).length_squared() >= eps.powi(2) {
         let mut cur = bgn;
-        let mut tr0 = &rs[to_rmv.pair / 3];
+        let mut tr0 = &rs[(to_rmv.pair / 3) as usize];
         let mut p_prev = ps[head_of(hs, t1.1)];
-        while cur != to_rmv.pair {
+        while cur != (to_rmv.pair as usize) {
             cur = next_of(cur); // incoming half around delt vert
             let p_next = ps[head_of(hs, cur)];
             let r_curr = &rs[cur / 3];
             let n_curr = &ns[cur / 3];
-            let n_pair = &ns[to_rmv.pair / 3];
+            let n_pair = &ns[(to_rmv.pair / 3) as usize];
             let ccw = |p0, p1, p2| is_ccw_3d(p0, p1, p2, n_curr, eps);
             if !is_coplanar(r_curr, tr0) {
                 let tr2 = tr0;
@@ -109,7 +109,7 @@ pub fn collapse_edge(
         cur = pair_of(hs, cur);
     }
 
-    ps[to_rmv.tail] = Vec3::NAN;
+    ps[to_rmv.tail as usize] = Vec3::NAN;
     collapse_triangle(hs, &t1);
 
     let mut cur = bgn;
@@ -130,7 +130,7 @@ pub fn collapse_edge(
     }
 
     // do collapse
-    update_vid_around_star(hs, bgn, end, vid_keep);
+    update_vid_around_star(hs, bgn, end, vid_keep as usize);
     collapse_triangle(hs, &t0);
     remove_if_folded(hs, ps, bgn);
     true

@@ -44,12 +44,37 @@ pub fn sort_unique<T: Ord + Send>(v: &mut [T]) {
     #[cfg(not(feature = "rayon"))] { v.sort_unstable() }
 }
 
+/// Only for an order under which no two items compare equal.
+pub fn sort_unique_by<T: Send>(v: &mut [T], f: impl Fn(&T, &T) -> Ordering + Sync) {
+    #[cfg(feature = "rayon")] { v.par_sort_unstable_by(f) }
+    #[cfg(not(feature = "rayon"))] { v.sort_unstable_by(f) }
+}
+
 pub fn sort_by_key<T: Send, K: Ord>(v: &mut [T], f: impl Fn(&T) -> K + Sync) {
     #[cfg(feature = "rayon")] { v.par_sort_by_key(f) }
     #[cfg(not(feature = "rayon"))] { v.sort_by_key(f) }
 }
 
-pub fn sort_by<T: Send>(v: &mut [T], f: impl Fn(&T, &T) -> Ordering + Sync) {
-    #[cfg(feature = "rayon")] { v.par_sort_by(f) }
-    #[cfg(not(feature = "rayon"))] { v.sort_by(f) }
+/// Slots of one slice that several threads write at once, each slot by one thread only.
+pub struct Shared<T> { at: *mut T, len: usize }
+unsafe impl<T: Send> Sync for Shared<T> {}
+unsafe impl<T: Send> Send for Shared<T> {}
+
+impl<T> Shared<T> {
+    pub fn new(slice: &mut [T]) -> Self { Self { at: slice.as_mut_ptr(), len: slice.len() } }
+
+    /// # Safety
+    /// No other thread reads or writes slot `i` while this runs, and the slice outlives `self`.
+    pub unsafe fn set(&self, i: usize, value: T) {
+        assert!(i < self.len);
+        unsafe { *self.at.add(i) = value; }
+    }
+
+    /// # Safety
+    /// As for `set`.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_mut(&self, i: usize) -> &mut T {
+        assert!(i < self.len);
+        unsafe { &mut *self.at.add(i) }
+    }
 }

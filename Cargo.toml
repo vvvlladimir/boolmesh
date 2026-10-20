@@ -30,9 +30,17 @@ default = []
 verbose = []
 f32 = []
 rayon = ["dep:rayon"]
+timings = []
 bevy = ["dep:bevy"]
 
 [[example]]
 name = "menger_sponge"
 path = "examples/menger_sponge.rs"
 required-features = ["bevy"]
+
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "boolean"
+harness = false

@@ -27,12 +27,12 @@ impl<'a> Kernel12<'a> {
         let mut k = 0;
 
         for vid in [h.tail, h.head].iter() {
-            if let Some((s, z)) = self.k02.op(*vid, q2) {
+            if let Some((s, z)) = self.k02.op((*vid) as usize, q2) {
                 let f = (*vid == h.tail) == self.fwd;
                 x12 += s * if f { 1 } else { -1 };
                 if k < 2 && (k == 0 || (s != 0) != shadow_) {
                     shadow_ = s != 0;
-                    xzy_lr0[k] = self.ps_p[*vid];
+                    xzy_lr0[k] = self.ps_p[(*vid) as usize];
                     let temp = xzy_lr0[k].y;
                     xzy_lr0[k].y = xzy_lr0[k].z;
                     xzy_lr0[k].z = temp;
@@ -46,7 +46,7 @@ impl<'a> Kernel12<'a> {
         for i in 0..3 {
             let q1 = 3 * q2 + i;
             let h = &self.hs_q[q1];
-            let q1f = if h.is_fwd() { q1 } else { h.pair };
+            let q1f = if h.is_fwd() { q1 } else { h.pair as usize };
             let op = if self.fwd { self.k11.op(p1, q1f) } else { self.k11.op(q1f, p1) };
             if let Some((s, xyzz)) = op {
                 x12 -= s * if h.is_fwd() { 1 } else { -1 };
@@ -88,7 +88,7 @@ pub fn intersect12<S> (
     let bbs = ma.hs.iter()
         .enumerate()
         .filter(|(_, h)| h.is_fwd())
-        .map(|(i, h)| Query::Bb(BBox::new(Some(i), &[ma.ps[h.tail], ma.ps[h.head]])))
+        .map(|(i, h)| Query::Bb(BBox::new(Some(i), &[ma.ps[h.tail as usize], ma.ps[h.head as usize]])))
         .collect::<Vec<Query>>();
 
     let mut hits = mb.collider.collision_map(&bbs, |a, b| {

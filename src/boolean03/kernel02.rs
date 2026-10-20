@@ -33,15 +33,15 @@ impl<'a> Kernel02<'a> {
         for i in 0..3 {
             let q1 = 3 * q2 + i;
             let half = self.hs_q[q1].clone();
-            let q1_f = if half.is_fwd() { q1 } else { half.pair };
+            let q1_f = if half.is_fwd() { q1 } else { half.pair as usize };
 
             if !fwd {
                 let q_vert = self.hs_q[q1_f].tail;
-                let diff = pos_p - self.ps_q[q_vert];
+                let diff = pos_p - self.ps_q[q_vert as usize];
                 let metric = diff.length_squared();
                 if metric < min_metric {
                     min_metric = metric;
-                    closest_vid = q_vert;
+                    closest_vid = q_vert as usize;
                 }
             }
 

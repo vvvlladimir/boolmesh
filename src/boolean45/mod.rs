@@ -53,7 +53,7 @@ fn size_output<S: Sync>(
     inv: bool, // whether to invert mesh of q
 ) -> (Vec<i32>, Vec<i32>) {
     // equivalent to CountVerts
-    let count = |hs: &[Half], i03: &[i32], f: usize| (0..3).map(|k| i03[hs[3 * f + k].tail].abs()).sum::<i32>();
+    let count = |hs: &[Half], i03: &[i32], f: usize| (0..3).map(|k| i03[hs[3 * f + k].tail as usize].abs()).sum::<i32>();
     let mut side_p = par::tabulate(mp.nf, |f| count(&mp.hs, i03, f));
     let mut side_q = par::tabulate(mq.nf, |f| count(&mq.hs, i30, f));
 
@@ -63,7 +63,7 @@ fn size_output<S: Sync>(
         let hid1 = mp.hs[hid0].pair;
         let inc = i12[i].abs();
         side_p[face_of(hid0)] += inc;
-        side_p[face_of(hid1)] += inc;
+        side_p[face_of(hid1 as usize)] += inc;
         side_q[p1q2[i][1]] += inc;
     }
 
@@ -72,7 +72,7 @@ fn size_output<S: Sync>(
         let hid1 = mq.hs[hid0].pair;
         let inc = i21[i].abs();
         side_q[face_of(hid0)] += inc;
-        side_q[face_of(hid1)] += inc;
+        side_q[face_of(hid1 as usize)] += inc;
         side_p[p2q1[i][0]] += inc;
     }
 
@@ -124,7 +124,7 @@ fn add_new_edge_verts(
         let hid0 = hid_p;
         let hid1 = hs_p[hid_p].pair;
         let key_l = if fwd { (face_of(hid0), fid_q) } else { (fid_q, face_of(hid0)) };
-        let key_r = if fwd { (face_of(hid1), fid_q) } else { (fid_q, face_of(hid1)) };
+        let key_r = if fwd { (face_of(hid1 as usize), fid_q) } else { (fid_q, face_of(hid1 as usize)) };
         let dir = inc < 0;
         pt_old.entry(hid_p).or_default();
         pt_new.entry(key_l).or_default();
@@ -188,23 +188,23 @@ fn append_partial_edges(
         let hpos_p = pt;
         let h = &hs_p[*hid_p];
         whole_flag[*hid_p] = false;
-        whole_flag[h.pair] = false;
+        whole_flag[h.pair as usize] = false;
 
         // assigning 0-1 value to hpos_p
-        let dif = ps_p[h.head] - ps_p[h.tail];
+        let dif = ps_p[h.head as usize] - ps_p[h.tail as usize];
         for p in hpos_p.iter_mut() { p.val = dif.dot(ps_r[p.vid]); }
 
-        let i_tail = i03[h.tail]; // mostly 0 or 1
-        let i_head = i03[h.head]; // mostly 0 or 1
-        let p_tail = ps_r[vid_p2r[h.tail] as usize];
-        let p_head = ps_r[vid_p2r[h.head] as usize];
+        let i_tail = i03[h.tail as usize]; // mostly 0 or 1
+        let i_head = i03[h.head as usize]; // mostly 0 or 1
+        let p_tail = ps_r[vid_p2r[h.tail as usize] as usize];
+        let p_head = ps_r[vid_p2r[h.head as usize] as usize];
 
-        for i in 0..i_tail.abs() as usize { hpos_p.push(EdgePt{ val: p_tail.dot(dif), vid: vid_p2r[h.tail] as usize + i, cid: usize::MAX, is_tail: i_tail > 0 }); }
-        for i in 0..i_head.abs() as usize { hpos_p.push(EdgePt{ val: p_head.dot(dif), vid: vid_p2r[h.head] as usize + i, cid: usize::MAX, is_tail: i_head < 0 }); }
+        for i in 0..i_tail.abs() as usize { hpos_p.push(EdgePt{ val: p_tail.dot(dif), vid: vid_p2r[h.tail as usize] as usize + i, cid: usize::MAX, is_tail: i_tail > 0 }); }
+        for i in 0..i_head.abs() as usize { hpos_p.push(EdgePt{ val: p_head.dot(dif), vid: vid_p2r[h.head as usize] as usize + i, cid: usize::MAX, is_tail: i_head < 0 }); }
 
         let mut half_seq = pair_up(hpos_p);
         let fp_l = face_of(*hid_p);
-        let fp_r = face_of(h.pair);
+        let fp_r = face_of(h.pair as usize);
         let fid_l = fid_p2r[fp_l] as usize;
         let fid_r = fid_p2r[fp_r] as usize;
 
@@ -213,16 +213,16 @@ fn append_partial_edges(
         // position advanced CCW. This is only valid if this is a retained vert;
         // it will be ignored later if the vert is new.
 
-        let fw_tri = Tref{ mid: if fwd {0} else {1}, fid: fp_l, ..Default::default() };
-        let bk_tri = Tref{ mid: if fwd {0} else {1}, fid: fp_r, ..Default::default() };
+        let fw_tri = Tref{ mid: if fwd {0} else {1}, fid: (fp_l as u32), ..Default::default() };
+        let bk_tri = Tref{ mid: if fwd {0} else {1}, fid: (fp_r as u32), ..Default::default() };
 
         for h in half_seq.iter_mut() {
             let fw_edge = face_ptr_r[fid_l] as usize;
             let bk_edge = face_ptr_r[fid_r] as usize;
             face_ptr_r[fid_l] += 1;
             face_ptr_r[fid_r] += 1;
-            hs_r[fw_edge] = Half::new(h.tail, h.head, bk_edge, usize::MAX);
-            hs_r[bk_edge] = Half::new(h.head, h.tail, fw_edge, usize::MAX);
+            hs_r[fw_edge] = Half::new(h.tail as usize, h.head as usize, bk_edge, usize::MAX);
+            hs_r[bk_edge] = Half::new(h.head as usize, h.tail as usize, fw_edge, usize::MAX);
             rs_r[fw_edge] = fw_tri;
             rs_r[bk_edge] = bk_tri;
         }
@@ -251,22 +251,26 @@ fn append_new_edges(
         let mut half_seq = pair_up(pt);
         let fid_l = fid_pq2r[*fid_p] as usize;
         let fid_r = fid_pq2r[*fid_q + nf_p] as usize;
-        let fw_ref = Tref { mid: 0, fid: *fid_p, ..Default::default() };
-        let bk_ref = Tref { mid: 1, fid: *fid_q, ..Default::default() };
+        let fw_ref = Tref { mid: 0, fid: ((*fid_p) as u32), ..Default::default() };
+        let bk_ref = Tref { mid: 1, fid: ((*fid_q) as u32), ..Default::default() };
 
         for h in half_seq.iter_mut() {
             let fw_edge = face_ptr_r[fid_l] as usize;
             let bk_edge = face_ptr_r[fid_r] as usize;
             face_ptr_r[fid_l] += 1;
             face_ptr_r[fid_r] += 1;
-            hs_r[fw_edge] = Half::new(h.tail, h.head, bk_edge, usize::MAX);
-            hs_r[bk_edge] = Half::new(h.head, h.tail, fw_edge, usize::MAX);
+            hs_r[fw_edge] = Half::new(h.tail as usize, h.head as usize, bk_edge, usize::MAX);
+            hs_r[bk_edge] = Half::new(h.head as usize, h.tail as usize, fw_edge, usize::MAX);
             rs_r[fw_edge] = fw_ref;
             rs_r[bk_edge] = bk_ref;
         }
     }
 }
 
+// Each halfedge of P left whole, taken once from its forward side, goes `inc` times into the
+// faces on either side of it, after their partial and new edges. A face takes its edges in the
+// order of the index they are taken from, so where each lands is known from the face's own
+// three edges, and every edge is written on its own.
 fn append_whole_edges(
     i03: &[i32],
     half_p: &[Half],
@@ -274,41 +278,45 @@ fn append_whole_edges(
     vid_p2r: &[i32],
     whole_flag: &[bool],
     fwd: bool,
-    face_ptr_r: &mut[i32],
+    face_ptr_r: &[i32],
     hs_r: &mut[Half],
     rs_r: &mut[Tref],
 ) {
-    for (i, hp) in half_p.iter().enumerate() {
-        if !whole_flag[i] || !hp.is_fwd() { continue; }
-
-        let mut h = hp.clone();
-        let inc = i03[h.tail];
-        if inc == 0 { continue; }
-        if inc < 0 { mem::swap(&mut h.tail, &mut h.head); }
-
-        h.tail = vid_p2r[h.tail] as usize;
-        h.head = vid_p2r[h.head] as usize;
+    let taken_from = |h: usize| if half_p[h].is_fwd() { h } else { half_p[h].pair as usize };
+    let count = |i: usize| if whole_flag[i] { i03[half_p[i].tail as usize].unsigned_abs() as usize } else { 0 };
+    // Where in face f the edges taken from index i begin.
+    let offset = |f: usize, i: usize| {
+        let base = face_ptr_r[fid_p2r[f] as usize] as usize;
+        base + (0..3).map(|k| taken_from(3 * f + k)).filter(|&j| j < i).map(count).sum::<usize>()
+    };
+    let hs_slots = par::Shared::new(hs_r);
+    let rs_slots = par::Shared::new(rs_r);
+    par::for_each(half_p.len(), |i| {
+        let hp = &half_p[i];
+        if !whole_flag[i] || !hp.is_fwd() { return; }
+        let inc = i03[hp.tail as usize];
+        if inc == 0 { return; }
+        let (mut tail, mut head) = (hp.tail, hp.head);
+        if inc < 0 { mem::swap(&mut tail, &mut head); }
+        let (tail, head) = (vid_p2r[tail as usize] as usize, vid_p2r[head as usize] as usize);
 
         let fp_l = face_of(i);
-        let fp_r = face_of(hp.pair);
-        let fid_l = fid_p2r[fp_l] as usize;
-        let fid_r = fid_p2r[fp_r] as usize;
-        let fw_ref = Tref{ mid: if fwd {0} else {1}, fid: fp_l, ..Default::default() };
-        let bk_ref = Tref{ mid: if fwd {0} else {1}, fid: fp_r, ..Default::default() };
+        let fp_r = face_of(hp.pair as usize);
+        let (at_l, at_r) = (offset(fp_l, i), offset(fp_r, i));
+        let fw_ref = Tref{ mid: if fwd {0} else {1}, fid: (fp_l as u32), ..Default::default() };
+        let bk_ref = Tref{ mid: if fwd {0} else {1}, fid: (fp_r as u32), ..Default::default() };
 
-        for _ in 0..inc.abs() as usize {
-            let fw_edge = face_ptr_r[fid_l] as usize;
-            let bk_edge = face_ptr_r[fid_r] as usize;
-            face_ptr_r[fid_l] += 1;
-            face_ptr_r[fid_r] += 1;
-            hs_r[fw_edge] = Half::new(h.tail, h.head, bk_edge, usize::MAX);
-            hs_r[bk_edge] = Half::new(h.head, h.tail, fw_edge, usize::MAX);
-            rs_r[fw_edge] = fw_ref;
-            rs_r[bk_edge] = bk_ref;
-            h.tail += 1;
-            h.head += 1;
+        for j in 0..inc.unsigned_abs() as usize {
+            let (fw_edge, bk_edge) = (at_l + j, at_r + j);
+            // SAFETY: each slot is reached from one halfedge of P and one repeat only.
+            unsafe {
+                hs_slots.set(fw_edge, Half::new(tail + j, head + j, bk_edge, usize::MAX));
+                hs_slots.set(bk_edge, Half::new(head + j, tail + j, fw_edge, usize::MAX));
+                rs_slots.set(fw_edge, fw_ref);
+                rs_slots.set(bk_edge, bk_ref);
+            }
         }
-    }
+    });
 }
 
 pub struct Boolean45 {
@@ -327,6 +335,7 @@ pub fn boolean45<S: Sync>(
     b03: &Boolean03,
     op: &OpType
 ) -> Boolean45 {
+    let mut laps = crate::laps::Laps::new("assemble");
     let c1 = if op == &OpType::Intersect {0} else {1};
     let c2 = if op == &OpType::Add       {1} else {0};
     let c3 = if op == &OpType::Intersect {1} else {-1};
@@ -358,16 +367,19 @@ pub fn boolean45<S: Sync>(
     for i in 0..b03.v12.len() { duplicate_verts(&i12, &vid_12r, &b03.v12, &mut ps_r, i); }
     for i in 0..b03.v21.len() { duplicate_verts(&i21, &vid_21r, &b03.v21, &mut ps_r, i); }
 
+    laps.lap("verts");
     let mut pt_p   = BTreeMap::new();
     let mut pt_q   = BTreeMap::new();
     let mut pt_new = BTreeMap::new();
     add_new_edge_verts(&b03.p1q2, &i12, &vid_12r, &mp.hs, &mut pt_p, &mut pt_new, true, 0);
     add_new_edge_verts(&b03.p2q1, &i21, &vid_21r, &mq.hs, &mut pt_q, &mut pt_new, false, b03.p1q2.len());
 
+    laps.lap("edge verts");
     let mut ns_r = vec![];
     let inv = op == &OpType::Subtract;
     let (hid_per_f, fid_pq2r) = size_output(mp, mq, &i03, &i30, &i12, &i21, &b03.p1q2, &b03.p2q1, &mut ns_r, inv);
 
+    laps.lap("size");
     let nh = *hid_per_f.last().unwrap() as usize;
     let mut face_ptr_r = hid_per_f.clone();
     let mut whole_flag_p = vec![true; mp.nh];
@@ -378,14 +390,17 @@ pub fn boolean45<S: Sync>(
     let fid_p2r = &fid_pq2r[0..mp.nf];
     let fid_q2r = &fid_pq2r[mp.nf..];
 
+    laps.lap("alloc");
     append_partial_edges(&i03, &mp.hs, &mp.ps, &ps_r, &vid_p2r, fid_p2r, true,  &mut hs_r, &mut rs_r, &mut pt_p, &mut face_ptr_r, &mut whole_flag_p);
     append_partial_edges(&i30, &mq.hs, &mq.ps, &ps_r, &vid_q2r, fid_q2r, false, &mut hs_r, &mut rs_r, &mut pt_q, &mut face_ptr_r, &mut whole_flag_q);
 
     append_new_edges(&ps_r, &fid_pq2r, mp.nf, &mut face_ptr_r, &mut pt_new, &mut hs_r, &mut rs_r);
 
-    append_whole_edges(&i03, &mp.hs, fid_p2r, &vid_p2r, &whole_flag_p, true,  &mut face_ptr_r, &mut hs_r, &mut rs_r);
-    append_whole_edges(&i30, &mq.hs, fid_q2r, &vid_q2r, &whole_flag_q, false, &mut face_ptr_r, &mut hs_r, &mut rs_r);
+    laps.lap("partial+new");
+    append_whole_edges(&i03, &mp.hs, fid_p2r, &vid_p2r, &whole_flag_p, true,  &face_ptr_r, &mut hs_r, &mut rs_r);
+    append_whole_edges(&i30, &mq.hs, fid_q2r, &vid_q2r, &whole_flag_q, false, &face_ptr_r, &mut hs_r, &mut rs_r);
 
+    laps.lap("whole");
     Boolean45 {
         ps: ps_r,
         ns: ns_r,

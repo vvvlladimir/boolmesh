@@ -2,8 +2,8 @@
 //--- This Source Code Form is subject to the terms of the Mozilla Public License v.2.0.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use crate::{par, Vec3};
-use crate::bounds::{union_bbs, BBox, Query};
+use crate::{par, Real, Vec3};
+use crate::bounds::{BBox, Query};
 
 pub const K_NO_CODE: u32 = 0xFFFFFFFF;
 const K_INITIAL_LENGTH: i32 = 128;
@@ -99,14 +99,43 @@ impl<'a> RadixTree<'a> {
     }
 }
 
+/// A node's box in `f32`, rounded outward: a third of the room an `f64` box with an id takes.
+/// It holds a little more than the faces under it, which costs a query nothing but a test the
+/// exact kernels then answer with no crossing.
+#[derive(Clone, Copy, Debug)]
+pub struct Bounds { min: [f32; 3], max: [f32; 3] }
+
+impl Bounds {
+    const EMPTY: Self = Self { min: [f32::MAX; 3], max: [f32::MIN; 3] };
+
+    fn around(b: &BBox) -> Self {
+        let down = |x: Real| { let y = x as f32; if (y as Real) > x { y.next_down() } else { y } };
+        let up = |x: Real| { let y = x as f32; if (y as Real) < x { y.next_up() } else { y } };
+        if b.min.x > b.max.x { return Self::EMPTY; }
+        Self { min: b.min.to_array().map(down), max: b.max.to_array().map(up) }
+    }
+
+    fn union(&self, o: &Self) -> Self {
+        Self { min: [0, 1, 2].map(|i| self.min[i].min(o.min[i])), max: [0, 1, 2].map(|i| self.max[i].max(o.max[i])) }
+    }
+
+    fn overlaps(&self, q: &Query) -> bool {
+        let (lo, hi) = (self.min.map(Real::from), self.max.map(Real::from));
+        match q {
+            Query::Bb(b) => (0..3).all(|i| lo[i] <= b.max[i] && hi[i] >= b.min[i]),
+            Query::Pt(p) => lo[0] <= p.pos.x && lo[1] <= p.pos.y && hi[0] >= p.pos.x && hi[1] >= p.pos.y,
+        }
+    }
+}
+
 // Box slots written from several threads at once; see `update_boxes` for why no two touch one.
-struct Slots(*mut BBox);
+struct Slots(*mut Bounds);
 unsafe impl Sync for Slots {}
 unsafe impl Send for Slots {}
 
 #[derive(Clone, Debug)]
 pub struct MortonCollider {
-    pub node_bb: Vec<BBox>,
+    pub node_bb: Vec<Bounds>,
     pub node_parent: Vec<i32>,
     pub intl_children: Vec<(i32, i32)>,
 }
@@ -133,7 +162,7 @@ impl MortonCollider {
                 // SAFETY: indices lie inside `node_bb`; the counter hands `node` to this thread
                 // alone, and its acquire orders the children's writes before these reads.
                 unsafe {
-                    let b = union_bbs(&*slots.0.add(c1 as usize), &*slots.0.add(c2 as usize));
+                    let b = (*slots.0.add(c1 as usize)).union(&*slots.0.add(c2 as usize));
                     *slots.0.add(node as usize) = b;
                 }
             }
@@ -155,7 +184,7 @@ impl MortonCollider {
         }
 
         let mut res = MortonCollider {
-            node_bb: par::tabulate(n_node, |n| if n % 2 == 0 { leaf_bb[n / 2].clone() } else { BBox::default() }),
+            node_bb: par::tabulate(n_node, |n| if n % 2 == 0 { Bounds::around(&leaf_bb[n / 2]) } else { Bounds::EMPTY }),
             node_parent,
             intl_children
         };
@@ -188,7 +217,7 @@ impl MortonCollider {
 
 fn find_collisions<F>(
     queries: &[Query],
-    node_bb: &[BBox],
+    node_bb: &[Bounds],
     children: &[(i32, i32)],
     query_idx: usize,
     record: &mut F,

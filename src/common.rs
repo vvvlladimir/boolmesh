@@ -21,8 +21,7 @@ mod precision {
     pub const K_PRECISION: f64 = 1e-12;
 }
 
-pub type Vec2u = glam::USizeVec2;
-pub type Vec3u = glam::USizeVec3;
+pub type Vec3u = glam::UVec3;
 pub use precision::{Real, Vec2, Vec3, Vec4, Mat3, K_PRECISION};
 pub const K_BEST: Real = Real::MIN;
 
@@ -30,24 +29,32 @@ pub const K_BEST: Real = Real::MIN;
 #[derive(PartialEq)]
 pub enum OpType { Add, Subtract, Intersect }
 
-#[derive(Clone, Debug)]
+/// What an index field holds when it points nowhere.
+pub const NONE: u32 = u32::MAX;
+
+// Indices are `u32`, half of what `usize` takes: a mesh past four billion halfedges is
+// refused when it is read.
+#[derive(Clone, Copy, Debug)]
 pub struct Half {
-    pub tail: usize,
-    pub head: usize,
-    pub pair: usize,
-    pub prop: usize,
+    pub tail: u32,
+    pub head: u32,
+    pub pair: u32,
+    pub prop: u32,
 }
 
 impl Default for Half {
-    fn default() -> Self { Self { tail: usize::MAX, head: usize::MAX, pair: usize::MAX, prop: usize::MAX } }
+    fn default() -> Self { Self { tail: NONE, head: NONE, pair: NONE, prop: NONE } }
 }
 
+/// `i` as a stored index; `usize::MAX`, and `NONE` read back as a `usize`, are `NONE`.
+pub fn id(i: usize) -> u32 { if i == usize::MAX { NONE } else { debug_assert!(i <= NONE as usize); i as u32 } }
+
 impl Half {
-    pub fn new(tail: usize, head: usize, pair: usize, prop: usize) -> Self { Self { tail, head, pair, prop } }
-    pub fn tmp(tail: usize, head: usize) -> Self { Self { tail, head, pair: usize::MAX, prop: usize::MAX } }
-    pub fn tail(&self) -> Option<usize> { if self.tail == usize::MAX {None} else {Some(self.tail)} }
-    pub fn head(&self) -> Option<usize> { if self.head == usize::MAX {None} else {Some(self.head)} }
-    pub fn pair(&self) -> Option<usize> { if self.pair == usize::MAX {None} else {Some(self.pair)} }
+    pub fn new(tail: usize, head: usize, pair: usize, prop: usize) -> Self { Self { tail: id(tail), head: id(head), pair: id(pair), prop: id(prop) } }
+    pub fn tmp(tail: usize, head: usize) -> Self { Self { tail: id(tail), head: id(head), pair: NONE, prop: NONE } }
+    pub fn tail(&self) -> Option<usize> { if self.tail == NONE {None} else {Some(self.tail as usize)} }
+    pub fn head(&self) -> Option<usize> { if self.head == NONE {None} else {Some(self.head as usize)} }
+    pub fn pair(&self) -> Option<usize> { if self.pair == NONE {None} else {Some(self.pair as usize)} }
     pub fn is_fwd(&self) -> bool { self.tail < self.head }
 }
 
@@ -57,16 +64,16 @@ pub fn next_of(hid: usize) -> usize { let mut i = hid + 1; if i.is_multiple_of(3
 
 #[derive(Clone, Debug, Copy)]
 pub struct Tref {
-    pub mid: usize, // mesh id
-    pub fid: usize, // face id
-    pub pid: i32,   // planer id
+    pub mid: u32, // mesh id
+    pub fid: u32, // face id
+    pub pid: i32, // planer id
 }
 
 impl Default for Tref {
     fn default() -> Self {
         Self {
-            mid: usize::MAX,
-            fid: usize::MAX,
+            mid: NONE,
+            fid: NONE,
             pid: -1
         }
     }

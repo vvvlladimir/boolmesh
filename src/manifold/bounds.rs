@@ -61,12 +61,3 @@ impl BBox {
     }
 }
 
-
-pub fn union_bbs(b0: &BBox, b1: &BBox) -> BBox {
-    let min = b0.min.min(b1.min);
-    let max = b0.max.max(b1.max);
-    BBox { id: None, min, max }
-}
-
-
-

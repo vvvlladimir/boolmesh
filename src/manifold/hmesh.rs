@@ -1,32 +1,21 @@
 //--- Copyright (C) 2025 Saki Komikado <komietty@gmail.com>,
 //--- This Source Code Form is subject to the terms of the Mozilla Public License v.2.0.
-#![allow(clippy::needless_range_loop)]
 
 use std::f64::consts::PI;
-use crate::{par, Vec3, Vec2u, Vec3u, Real};
+use crate::{par, Vec3, Vec3u, Real};
 
 /// Hmesh preserves the order of pos and idx in any cases.
-/// Edges are ordered so as the edge is forward (tail idx < head idx)
 #[derive(Debug, Clone)]
 pub(in crate::manifold) struct Hmesh {
-    pub nv: usize,
-    pub nf: usize,
-    pub nh: usize,
     pub twin: Vec<usize>,
-    pub head: Vec<usize>,
-    pub tail: Vec<usize>,
-    pub half: Vec<usize>,
     pub vns: Vec<Vec3>,
     pub fns: Vec<Vec3>,
 }
 
-fn edge_topology(
-    pos: &[Vec3],
-    idx: &[Vec3u],
-    e2v: &mut Vec<Vec2u>,
-    e2f: &mut Vec<Vec2u>,
-    f2e: &mut Vec<Vec3u>,
-) -> Result<(), String> {
+// The halfedge across each corner's edge. Corners are sorted by their edge, then face and
+// side; within an edge's run they pair off two by two in that order, and a run left odd has a
+// corner with nothing across it.
+fn twins(pos: &[Vec3], idx: &[Vec3u]) -> Result<Vec<usize>, String> {
     if pos.is_empty() { return Err("empty pos matrix".into()); }
     if idx.is_empty() { return Err("empty idx matrix".into()); }
     if pos.len() > u32::MAX as usize || 3 * idx.len() > u32::MAX as usize { return Err("mesh too large".into()); }
@@ -40,52 +29,22 @@ fn edge_topology(
         (((v1 as u64) << 32) | v2 as u64, ((i as u64) << 2) | j as u64)
     });
     par::sort_unique(&mut ett);
-    let row = |k: usize| {
-        let (e, f) = ett[k];
-        [(e >> 32) as usize, (e & 0xFFFF_FFFF) as usize, (f >> 2) as usize, (f & 3) as usize]
-    };
+    let corner = |k: usize| { let f = ett[k].1; 3 * (f >> 2) as usize + (f & 3) as usize };
 
-    let mut ne = 1;
-    for i in 0..ett.len() - 1 {
-        if ett[i].0 != ett[i + 1].0 { ne += 1; }
-    }
-
-    e2v.resize(ne, Vec2u::MAX);
-    e2f.resize(ne, Vec2u::MAX);
-    f2e.resize(idx.len(), Vec3u::MAX);
-    ne = 0;
-
-    let mut i = 0;
-    while i < ett.len() {
-        if i == ett.len() - 1 || ett[i].0 != ett[i + 1].0 {
-            // Border edge
-            let [v1, v2, i, j] = row(i);
-            e2v[ne][0] = v1;
-            e2v[ne][1] = v2;
-            e2f[ne][0] = i;
-            f2e[i][j]  = ne;
-        } else {
-            let r1 = row(i);
-            let r2 = row(i + 1);
-            e2v[ne][0] = r1[0];
-            e2v[ne][1] = r1[1];
-            e2f[ne][0] = r1[2];
-            e2f[ne][1] = r2[2];
-            f2e[r1[2]][r1[3]] = ne;
-            f2e[r2[2]][r2[3]] = ne;
-            i += 1; // skip the next one
+    let starts = par::flat_tabulate(ett.len(), |k| (k == 0 || ett[k].0 != ett[k - 1].0).then_some(k));
+    let mut twin = vec![usize::MAX; ett.len()];
+    let slots = par::Shared::new(&mut twin);
+    par::for_each(starts.len(), |r| {
+        let (s, e) = (starts[r], starts.get(r + 1).copied().unwrap_or(ett.len()));
+        for k in (s..e - 1).step_by(2) {
+            // SAFETY: every corner sits in one run and one place in it.
+            unsafe {
+                slots.set(corner(k), corner(k + 1));
+                slots.set(corner(k + 1), corner(k));
+            }
         }
-        ne += 1;
-        i += 1;
-    }
-
-    let e2v: &[Vec2u] = e2v;
-    par::for_each_mut(e2f, |i, ef| {
-        let fid = ef[0];
-        let flip = !(0..3).any(|j| idx[fid][j] == e2v[i][0] && idx[fid][(j + 1) % 3] == e2v[i][1]);
-        if flip { *ef = Vec2u::new(ef[1], ef[0]); }
     });
-    Ok(())
+    Ok(twin)
 }
 
 impl Hmesh {
@@ -93,60 +52,45 @@ impl Hmesh {
         pos: &[Vec3],
         idx: &[Vec3u],
     ) -> Result<Self, String> {
-        let mut e2v = Default::default();
-        let mut e2f = Default::default();
-        let mut f2e = Default::default();
-        edge_topology(pos, idx, &mut e2v, &mut e2f, &mut f2e)?;
-
-        let nv = pos.len();
-        let nf = idx.len();
-        let nh = e2v.len() * 2;
-        let nc = 3 * nf;
-
-        let head = par::tabulate(nh, |ih| if ih < nc { idx[ih / 3][(ih + 1) % 3] } else { usize::MAX });
-        let tail = par::tabulate(nh, |ih| if ih < nc { idx[ih / 3][ih % 3] } else { usize::MAX });
-        // The other halfedge on the same edge: an edge holds at most two, in the faces it lists.
-        let twin = par::tabulate(nh, |ih| {
-            if ih >= nc { return usize::MAX; }
-            let ie = f2e[ih / 3][ih % 3];
-            for f in [e2f[ie][0], e2f[ie][1]] {
-                if f == usize::MAX { continue; }
-                if let Some(k) = (0..3).find(|&k| 3 * f + k != ih && f2e[f][k] == ie) { return 3 * f + k; }
-            }
-            usize::MAX
-        });
-
+        let mut laps = crate::laps::Laps::new("topology");
+        let twin = twins(pos, idx)?;
+        laps.lap("twins");
         if twin.iter().any(|v| v == &usize::MAX) {
             return Err("Input mesh must not contain boundary edges.".into());
         }
 
-        let half = (0..nh).collect();
-        let fns = par::tabulate(nf, |i| {
-            let p2 = pos[idx[i][1]];
-            let p1 = pos[idx[i][0]];
-            let p0 = pos[idx[i][2]];
-            let x = p2 - p1;
-            let t = (p1 - p0) * -1.;
-            x.cross(t).normalize()
-        });
+        let fns = face_normals(pos, idx);
+        laps.lap("fns");
         let vns = vert_normals(pos, idx, &fns);
+        laps.lap("vns");
 
-        Ok(Hmesh{ nv, nf, nh, twin, head, tail, half, vns, fns })
+        Ok(Hmesh{ twin, vns, fns })
     }
 }
 
+pub(in crate::manifold) fn face_normals(pos: &[Vec3], idx: &[Vec3u]) -> Vec<Vec3> {
+    par::map(idx, |f| {
+        let p2 = pos[f[1] as usize];
+        let p1 = pos[f[0] as usize];
+        let p0 = pos[f[2] as usize];
+        let x = p2 - p1;
+        let t = (p1 - p0) * -1.;
+        x.cross(t).normalize()
+    })
+}
+
 // Angle-weighted; each vertex sums its corners in face order, so threads do not change the sum.
-fn vert_normals(pos: &[Vec3], idx: &[Vec3u], fns: &[Vec3]) -> Vec<Vec3> {
+pub(in crate::manifold) fn vert_normals(pos: &[Vec3], idx: &[Vec3u], fns: &[Vec3]) -> Vec<Vec3> {
     let nv = pos.len();
     let mut start = vec![0usize; nv + 1];
-    for f in idx { for j in 0..3 { start[f[j] + 1] += 1; } }
+    for f in idx { for j in 0..3 { start[(f[j] + 1) as usize] += 1; } }
     for v in 0..nv { start[v + 1] += start[v]; }
     let mut fill = start.clone();
     let mut corners = vec![0u32; 3 * idx.len()];
     for (i, f) in idx.iter().enumerate() {
         for j in 0..3 {
-            corners[fill[f[j]]] = (3 * i + j) as u32;
-            fill[f[j]] += 1;
+            corners[fill[f[j] as usize]] = (3 * i + j) as u32;
+            fill[f[j] as usize] += 1;
         }
     }
 
@@ -154,9 +98,9 @@ fn vert_normals(pos: &[Vec3], idx: &[Vec3u], fns: &[Vec3]) -> Vec<Vec3> {
         let mut n = Vec3::ZERO;
         for &c in &corners[start[v]..start[v + 1]] {
             let (i, j) = (c as usize / 3, c as usize % 3);
-            let v_prev = pos[idx[i][(j + 2) % 3]];
+            let v_prev = pos[(idx[i][(j + 2) % 3]) as usize];
             let v_curr = pos[v];
-            let v_next = pos[idx[i][(j + 1) % 3]];
+            let v_next = pos[(idx[i][(j + 1) % 3]) as usize];
             let e_curr = (v_next - v_curr).normalize();
             let e_prev = (v_curr - v_prev).normalize();
             if e_curr.is_nan() || e_prev.is_nan() { continue; }

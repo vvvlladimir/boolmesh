@@ -67,13 +67,13 @@ pub fn shadows01(
     let q1s = hs_q[q1].tail;
     let q1e = hs_q[q1].head;
     let p0x  = ps_p[p0].x;
-    let q1sx = ps_q[q1s].x;
-    let q1ex = ps_q[q1e].x;
+    let q1sx = ps_q[q1s as usize].x;
+    let q1ex = ps_q[q1e as usize].x;
 
     // check weather the vert is in between the half from the x-axis point of view
     let mut s01 = if reverse {
-        let a = if shadows(q1sx, p0x, expand * ns[q1s].x) {1} else {0};
-        let b = if shadows(q1ex, p0x, expand * ns[q1e].x) {1} else {0};
+        let a = if shadows(q1sx, p0x, expand * ns[q1s as usize].x) {1} else {0};
+        let b = if shadows(q1ex, p0x, expand * ns[q1e as usize].x) {1} else {0};
         a - b
     } else {
         let a = if shadows(p0x, q1ex, expand * ns[p0].x) {1} else {0};
@@ -84,16 +84,16 @@ pub fn shadows01(
     // if in between...
     if s01 != 0 {
         let yz01 = interpolate(
-            ps_q[q1s],
-            ps_q[q1e],
+            ps_q[q1s as usize],
+            ps_q[q1e as usize],
             ps_p[p0].x
         );
         if reverse {
-            let d1 = ps_q[q1s] - ps_p[p0];
-            let d2 = ps_q[q1e] - ps_p[p0];
+            let d1 = ps_q[q1s as usize] - ps_p[p0];
+            let d2 = ps_q[q1e as usize] - ps_p[p0];
             let sta2 = d1.length_squared();
             let end2 = d2.length_squared();
-            let dir = if sta2 < end2 { ns[q1s].y } else { ns[q1e].y };
+            let dir = if sta2 < end2 { ns[q1s as usize].y } else { ns[q1e as usize].y };
             if !shadows(yz01[0], ps_p[p0].y, expand * dir) { s01 = 0; }
         } else {
             // return sign as 0 if vert from mfd_p is above

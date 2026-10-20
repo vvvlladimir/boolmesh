@@ -10,6 +10,7 @@ mod triangulation;
 mod simplification;
 mod common;
 mod par;
+mod laps;
 mod values;
 mod boolean03;
 mod boolean45;
@@ -43,9 +44,13 @@ pub fn compute_boolean<S: Data>(
     let eps = mp.eps.max(mq.eps);
     let tol = mp.tol.max(mq.tol);
 
+    let mut laps = laps::Laps::new("boolean");
     let     b03 = boolean03(mp, mq, &op);
+    laps.lap("intersect");
     let mut b45 = boolean45(mp, mq, &b03, &op);
+    laps.lap("assemble");
     let mut trg = triangulate(mp, mq, &b45, eps)?;
+    laps.lap("triangulate");
     let mut val = annotate(&mut trg.hs, &b45.ps, &trg.rs, mp, mq, eps);
 
     simplify_topology(
@@ -59,12 +64,14 @@ pub fn compute_boolean<S: Data>(
         eps
     );
 
+    laps.lap("simplify");
     cleanup_unused_verts(
         &mut b45.ps,
         &mut trg.hs
     );
+    laps.lap("cleanup");
 
-    Manifold::new_impl(
+    Manifold::from_paired(
         b45.ps,
         trg.hs,
         val,
