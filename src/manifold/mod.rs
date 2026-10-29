@@ -47,9 +47,11 @@ impl<S: Data> Manifold<S> {
         if !pos.len().is_multiple_of(3) { return Err("pos must be a multiple of 3".into()); }
         if !idx.len().is_multiple_of(3) { return Err("idx must be a multiple of 3".into()); }
         if !val.is_empty() && val.len() != idx.len() { return Err("val must hold one value per corner".into()); }
+        let nv = pos.len() / 3;
+        if idx.iter().any(|&i| i >= nv) { return Err("idx must refer to vertices in pos".into()); }
 
         let mut laps = crate::laps::Laps::new("read");
-        let (weld, rmap) = weld_verts(pos);
+        let (weld, rmap) = weld_verts(pos)?;
         laps.lap("weld");
 
         // create halfedge container
@@ -198,9 +200,10 @@ impl<S: Data> Manifold<S> {
 }
 
 // Merges bit-identical positions, numbering the kept ones in order of first appearance.
-fn weld_verts(pos: &[f64]) -> (Vec<Vec3>, Vec<usize>) {
+fn weld_verts(pos: &[f64]) -> Result<(Vec<Vec3>, Vec<usize>), String> {
     let n = pos.len() / 3;
     let ps = par::tabulate(n, |i| Vec3::new(pos[3 * i] as Real, pos[3 * i + 1] as Real, pos[3 * i + 2] as Real));
+    if !par::all(&ps, |_, p| p.is_finite()) { return Err("pos must not contain NaN or infinite coordinates".into()); }
     let mut keyed = par::tabulate(n, |i| ((ps[i].x.to_bits(), ps[i].y.to_bits(), ps[i].z.to_bits()), i));
     par::sort_unique(&mut keyed);
 
@@ -212,12 +215,12 @@ fn weld_verts(pos: &[f64]) -> (Vec<Vec3>, Vec<usize>) {
     drop(keyed);
 
     let mut weld = Vec::with_capacity(n);
-    let mut rmap = vec![0; pos.len()];
+    let mut rmap = vec![0; n];
     for i in 0..n {
         if first[i] == i { rmap[i] = weld.len(); weld.push(ps[i]); }
         else { rmap[i] = rmap[first[i]]; }
     }
-    (weld, rmap)
+    Ok((weld, rmap))
 }
 
 fn compute_face_morton(

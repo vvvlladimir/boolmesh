@@ -440,6 +440,30 @@ mod test_mesh_cleanup {
         assert_eq!(mfd.nv, 4);
         assert_eq!(mfd.nf, 4);
     }
+
+    #[test]
+    fn test_edge_shared_by_four_faces_is_an_error() {
+        // two tetrahedra sharing the edge 0-1: that edge has four faces
+        let pos = vec![
+            0., 0., 0.,
+            1., 0., 0.,
+            0., 1., 0.,
+            0., 0., 1.,
+            0., -1., 0.,
+            0., 0., -1.,
+        ];
+        let idx = vec![
+            0, 2, 1,
+            0, 1, 3,
+            0, 3, 2,
+            1, 2, 3,
+            0, 4, 1,
+            0, 1, 5,
+            0, 5, 4,
+            1, 4, 5,
+        ];
+        assert!(Manifold::new(&pos, &idx).is_err());
+    }
 }
 
 // Degenerate configurations of two icospheres: identical, offset or rotated by a few ulp,
@@ -589,7 +613,8 @@ mod test_sphere_degenerate {
 #[cfg(test)]
 mod test_values {
     use crate::prelude::*;
-    use crate::{Real, Vec2};
+    use crate::{Real, Vec2, Vec3};
+    use crate::values::get_barycentric_ratio;
 
     fn tol() -> f64 { if cfg!(feature = "f32") { 1e-4 } else { 1e-9 } }
 
@@ -762,6 +787,54 @@ mod test_values {
         }
     }
 
+    #[test]
+    fn test_point_near_all_three_edges_of_thin_triangle() {
+        // height 1.05e-4 > tol, so the triangle is not treated as degenerate, yet the point
+        // is within tol = 1e-4 of all three edge lines and of no corner
+        let pos = [Vec3::new(0., 0., 0.), Vec3::new(1., 0., 0.), Vec3::new(0.5, 1.05e-4, 0.)];
+        let uvw = get_barycentric_ratio(&Vec3::new(0.45, 0.5e-4, 0.), &pos, 1e-4);
+        assert!(uvw.is_finite(), "{uvw:?}");
+        assert!((uvw[0] + uvw[1] + uvw[2] - 1.).abs() < 1e-12, "{uvw:?}");
+    }
+
+}
+
+#[cfg(test)]
+mod test_input_validation {
+    use crate::prelude::Manifold;
+
+    // A unit tetrahedron: valid input, so each test changes one thing.
+    const POS: [f64; 12] = [0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0., 1.];
+    const IDX: [usize; 12] = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+
+    #[test]
+    fn test_valid_tet_is_accepted() {
+        assert!(Manifold::new(&POS, &IDX).is_ok());
+    }
+
+    #[test]
+    fn test_index_past_end_of_pos_is_an_error() {
+        let mut idx = IDX;
+        idx[0] = 99;
+        assert!(Manifold::new(&POS, &idx).is_err());
+    }
+
+    #[test]
+    fn test_index_past_last_vertex_is_an_error() {
+        // 4 vertices, but `pos.len()` is 12: index 5 used to be read as vertex 0.
+        let mut idx = IDX;
+        idx[0] = 5;
+        assert!(Manifold::new(&POS, &idx).is_err());
+    }
+
+    #[test]
+    fn test_non_finite_coordinates_are_errors() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut pos = POS;
+            pos[3] = bad;
+            assert!(Manifold::new(&pos, &IDX).is_err(), "{bad} was accepted");
+        }
+    }
 }
 
 #[cfg(test)]

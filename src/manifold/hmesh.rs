@@ -32,10 +32,15 @@ fn twins(pos: &[Vec3], idx: &[Vec3u]) -> Result<Vec<usize>, String> {
     let corner = |k: usize| { let f = ett[k].1; 3 * (f >> 2) as usize + (f & 3) as usize };
 
     let starts = par::flat_tabulate(ett.len(), |k| (k == 0 || ett[k].0 != ett[k - 1].0).then_some(k));
+    let run_end = |r: usize| starts.get(r + 1).copied().unwrap_or(ett.len());
+    if !par::all(&starts, |r, &s| run_end(r) - s <= 2) {
+        return Err("Input mesh has an edge shared by more than two faces.".into());
+    }
+
     let mut twin = vec![usize::MAX; ett.len()];
     let slots = par::Shared::new(&mut twin);
     par::for_each(starts.len(), |r| {
-        let (s, e) = (starts[r], starts.get(r + 1).copied().unwrap_or(ett.len()));
+        let (s, e) = (starts[r], run_end(r));
         for k in (s..e - 1).step_by(2) {
             // SAFETY: every corner sits in one run and one place in it.
             unsafe {

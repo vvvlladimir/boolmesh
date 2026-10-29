@@ -7,7 +7,7 @@ use crate::{Data, Real, Vec3, Half, Tref, Manifold};
 fn nxt(i: usize) -> usize { (i + 1) % 3 }
 fn prv(i: usize) -> usize { (i + 2) % 3 }
 
-fn get_barycentric_ratio(v: &Vec3, pos: &[Vec3; 3], tol: Real) -> Vec3 {
+pub fn get_barycentric_ratio(v: &Vec3, pos: &[Vec3; 3], tol: Real) -> Vec3 {
     let mut uvw = Vec3::ZERO;
     let dif = [pos[2] - pos[1], pos[0] - pos[2], pos[1] - pos[0]];
     let lsq = [dif[0].length_squared(), dif[1].length_squared(), dif[2].length_squared()];
@@ -17,23 +17,23 @@ fn get_barycentric_ratio(v: &Vec3, pos: &[Vec3; 3], tol: Real) -> Vec3 {
 
     for i in 0..3 { if (*v - pos[i]).length_squared() < tol2 { uvw[i] = 1.; return uvw; } }
 
-    if lsq[long] < tol2 { Vec3::new(1., 0., 0.) }
-    else if crs.length_squared() > lsq[long] * tol2 {
+    if lsq[long] < tol2 { return Vec3::new(1., 0., 0.); }
+    if crs.length_squared() > lsq[long] * tol2 {
         for i in 0..3 {
             let c = dif[i].cross(*v - pos[nxt(i)]);
             uvw[i] = if c.length_squared() < lsq[i] * tol2 { 0. } else { c.dot(crs) };
         }
-        uvw /= uvw[0] + uvw[1] + uvw[2];
-        uvw
-    } else {
-        let next = nxt(long);
-        let last = nxt(next);
-        let r = (*v - pos[next]).dot(dif[long]) / lsq[long];
-        uvw[long] = 0.;
-        uvw[next] = 1. - r;
-        uvw[last] = r;
-        uvw
+        let sum = uvw[0] + uvw[1] + uvw[2];
+        if sum != 0. { return uvw / sum; }
     }
+
+    let next = nxt(long);
+    let last = nxt(next);
+    let r = (*v - pos[next]).dot(dif[long]) / lsq[long];
+    uvw[long] = 0.;
+    uvw[next] = 1. - r;
+    uvw[last] = r;
+    uvw
 }
 
 pub fn annotate<S: Data>(
